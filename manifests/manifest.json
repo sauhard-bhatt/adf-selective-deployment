@@ -1,5 +1,5 @@
 {
-  "pipelines": ["pl_ingest_population_selective1", "pl_ingest_population_selective", "pl_get_meta_temporary_copy1", "pl_get_meta_temporary_copy2"],
+  "pipelines": ["pl_ingest_population_selective"],
   "includeTriggers": false,
   "includeIntegrationRuntimes": false,
   "includeAllGlobalParameters": true,

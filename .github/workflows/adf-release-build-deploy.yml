@@ -176,6 +176,19 @@ jobs:
           jq -e . artifacts/ARMTemplateForFactory.safe.json >/dev/null
           jq -e . artifacts/ARMTemplateParametersForFactory.json >/dev/null
 
+      - name: Stop triggers in DEV
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p state
+          : > state/dev_started_triggers.txt
+          TRIGGERS=$(az datafactory trigger list --resource-group "${{ env.RESOURCE_GROUP }}" --factory-name "${{ env.DEV_FACTORY_NAME }}" --query "[].name" -o tsv || true)
+          for t in $TRIGGERS; do
+            st=$(az datafactory trigger show --resource-group "${{ env.RESOURCE_GROUP }}" --factory-name "${{ env.DEV_FACTORY_NAME }}" --name "$t" --query "properties.runtimeState" -o tsv)
+            if [ "$st" = "Started" ]; then echo "$t" >> state/dev_started_triggers.txt; fi
+            az datafactory trigger stop --resource-group "${{ env.RESOURCE_GROUP }}" --factory-name "${{ env.DEV_FACTORY_NAME }}" --name "$t" || true
+          done
+
       - name: Echo before deploy
         shell: bash
         run: |
@@ -193,3 +206,15 @@ jobs:
             factoryName=${{ env.DEV_FACTORY_NAME }}
           deploymentName: adf-dev-${{ github.run_number }}
           deploymentMode: Incremental
+
+      - name: Restore triggers in DEV
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f state/dev_started_triggers.txt ]; then
+            while read -r t; do
+              [ -z "$t" ] && continue
+              az datafactory trigger start --resource-group "${{ env.RESOURCE_GROUP }}" --factory-name "${{ env.DEV_FACTORY_NAME }}" --name "$t" || true
+            done < state/dev_started_triggers.txt
+          fi

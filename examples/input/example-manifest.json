@@ -1,6 +1,6 @@
 {
   "pipelines": [
-    "pipeline_feature_200"
+    "pl_ingest_population_selective"
   ],
   "includeTriggers": false,
   "includeLinkedServices": true

@@ -1,0 +1,12 @@
+{
+  "pipelines": ["pl_ingest_population_selective1", "pl_ingest_population_selective", "pl_get_meta_temporary_copy1", "pl_get_meta_temporary_copy2"],
+  "includeTriggers": false,
+  "includeIntegrationRuntimes": false,
+  "includeAllGlobalParameters": true,
+
+  "includeLinkedServices": true,
+  "validateLinkedServicesExist": true,
+
+  "includeManagedVirtualNetwork": false,
+  "includeManagedPrivateEndpoints": false
+}

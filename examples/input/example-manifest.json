@@ -1,0 +1,7 @@
+{
+  "pipelines": [
+    "pipeline_feature_200"
+  ],
+  "includeTriggers": false,
+  "includeLinkedServices": true
+}

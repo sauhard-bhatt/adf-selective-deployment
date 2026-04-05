@@ -1,0 +1,9 @@
+{
+	"name": "covid-reporting-sauhard-adf",
+	"location": "eastus",
+	"identity": {
+		"type": "SystemAssigned",
+		"principalId": "REPLACE-ME-principalId",
+		"tenantId": "REPLACE-ME-tenantId"
+	}
+}

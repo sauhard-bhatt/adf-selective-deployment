@@ -1,0 +1,25 @@
+{
+  "manifestPipelines": [
+    "pl_ingest_population_selective"
+  ],
+  "allPipelines": [
+    "pl_ingest_population_selective"
+  ],
+  "childPipelinesDiscovered": [],
+  "datasets": [
+    "ds_population_raw_gz",
+    "ds_population_raw_tsv"
+  ],
+  "linkedServices": [
+    "ls_ablob_covidreportingsidsa",
+    "ls_adls_covidreportingsidsa"
+  ],
+  "dataflows": [],
+  "credentials": [],
+  "integrationRuntimes": [],
+  "includeTriggers": false,
+  "includeAllIntegrationRuntimes": false,
+  "includeGlobalParameters": true,
+  "dynamicReferences": [],
+  "warnings": []
+}

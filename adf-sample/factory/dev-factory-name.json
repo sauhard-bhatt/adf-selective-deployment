@@ -1,5 +1,5 @@
 {
-	"name": "covid-reporting-sauhard-adf",
+	"name": "DEV-FACTORY-NAME",
 	"location": "eastus",
 	"identity": {
 		"type": "SystemAssigned",

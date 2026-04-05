@@ -1,0 +1,243 @@
+# object creation again as live mode got wiped off
+name: ADF Release - Build ARM + Deploy to DEV
+
+on:
+  push:
+    branches:
+      - release
+      - "release/**"
+
+concurrency:
+  group: adf-release-dev
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+  SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_OUTPUT_DIR: ArmTemplate
+
+  # Factories
+  DEV_FACTORY_NAME: ${{ secrets.DEV_ADF_INSTANCE }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # No package-lock.json in repo, so cache uses package.json hash
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: Install deps
+        run: npm install
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Export ARM templates (CI publish)
+        run: |
+          set -euo pipefail
+          FACTORY_ID="/subscriptions/${{ env.SUBSCRIPTION_ID }}/resourceGroups/${{ env.RESOURCE_GROUP }}/providers/Microsoft.DataFactory/factories/${{ env.DEV_FACTORY_NAME }}"
+          npm run build export "${{ github.workspace }}" "$FACTORY_ID" "${{ env.ARM_OUTPUT_DIR }}"
+
+      - name: Write release metadata
+        run: |
+          set -euo pipefail
+          mkdir -p buildmeta
+          cat > buildmeta/release.json <<EOF
+          {
+            "branch": "${{ github.ref_name }}",
+            "commit": "${{ github.sha }}",
+            "run_id": "${{ github.run_id }}",
+            "run_number": "${{ github.run_number }}"
+          }
+          EOF
+
+      - name: Upload ARM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: adf-arm
+          path: ${{ env.ARM_OUTPUT_DIR }}
+
+      - name: Upload metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: adf-release-meta
+          path: buildmeta/release.json
+
+  deploy_dev:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download ARM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: adf-arm
+          path: ArmTemplate
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Ensure ADF CLI extension
+        run: az extension show --name datafactory >/dev/null 2>&1 || az extension add --name datafactory --yes
+
+      - name: Export DEV secrets to env
+        run: |
+          echo "DEV_ABLOB_CONNECTIONSTRING=${{ secrets.DEV_ABLOB_CONNECTIONSTRING }}" >> $GITHUB_ENV
+          # map expects DEV_ADLS_ACCOUNTKEY_VAR
+          echo "DEV_ADLS_ACCOUNTKEY_VAR=${{ secrets.DEV_ADLS_ACCOUNTKEY }}" >> $GITHUB_ENV
+
+      - name: Debug script path
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          ls -la scripts
+          python3 -c "import os; print('PWD=', os.getcwd())"
+
+      - name: Build final ARM parameters (DEV)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/build_final_adf_params.py
+        env:
+          BASE: ArmTemplate/ARMTemplateParametersForFactory.json
+          VALUES: .github/workflows/.env/dev.values.json
+          MAP: .github/workflows/.env/dev.secrets.map.json
+          OUT: ArmTemplate/ARMTemplateParametersForFactory.final.json
+          FAIL_ON_BLANK: "true"
+          DEBUG_KEYS: "true"
+
+      - name: Verify final params match base params (safe)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE="ArmTemplate/ARMTemplateParametersForFactory.json"
+          FINAL="ArmTemplate/ARMTemplateParametersForFactory.final.json"
+
+          echo "Base param count:  $(jq '.parameters | keys | length' "$BASE")"
+          echo "Final param count: $(jq '.parameters | keys | length' "$FINAL")"
+
+          extras=$(comm -23 \
+            <(jq -r '.parameters | keys[]' "$FINAL" | sort) \
+            <(jq -r '.parameters | keys[]' "$BASE"  | sort) \
+            || true)
+
+          if [ -n "$extras" ]; then
+            echo "Final has extra keys not in BASE:"
+            echo "$extras"
+            exit 1
+          fi
+
+          echo "OK: Final parameters are a subset of BASE."
+
+      # -------------------------
+      # DRIFT REPORT (DRY RUN)
+      # -------------------------
+      - name: Drift report (DRY RUN) - live minus template
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TEMPLATE="ArmTemplate/ARMTemplateForFactory.json"
+
+          jq -r '.resources[] | select(.type=="Microsoft.DataFactory/factories/pipelines") | .name | split("/")[-1]' "$TEMPLATE" \
+            | sort -u > desired_pipelines.txt || true
+          jq -r '.resources[] | select(.type=="Microsoft.DataFactory/factories/datasets") | .name | split("/")[-1]' "$TEMPLATE" \
+            | sort -u > desired_datasets.txt || true
+          jq -r '.resources[] | select(.type=="Microsoft.DataFactory/factories/linkedServices") | .name | split("/")[-1]' "$TEMPLATE" \
+            | sort -u > desired_linkedservices.txt || true
+
+          az datafactory pipeline list --resource-group "${{ env.RESOURCE_GROUP }}" --factory-name "${{ env.DEV_FACTORY_NAME }}" --query "[].name" -o tsv \
+            | sort -u > actual_pipelines.txt || true
+          az datafactory dataset list --resource-group "${{ env.RESOURCE_GROUP }}" --factory-name "${{ env.DEV_FACTORY_NAME }}" --query "[].name" -o tsv \
+            | sort -u > actual_datasets.txt || true
+          az datafactory linked-service list --resource-group "${{ env.RESOURCE_GROUP }}" --factory-name "${{ env.DEV_FACTORY_NAME }}" --query "[].name" -o tsv \
+            | sort -u > actual_linkedservices.txt || true
+
+          comm -23 actual_pipelines.txt desired_pipelines.txt > extra_pipelines.txt || true
+          comm -23 actual_datasets.txt desired_datasets.txt > extra_datasets.txt || true
+          comm -23 actual_linkedservices.txt desired_linkedservices.txt > extra_linkedservices.txt || true
+
+          echo "===== DRIFT REPORT: LIVE minus TEMPLATE ====="
+          echo "Extra Pipelines:"; cat extra_pipelines.txt || true
+          echo "Extra Datasets:"; cat extra_datasets.txt || true
+          echo "Extra LinkedServices:"; cat extra_linkedservices.txt || true
+
+          # Save for later jobs
+          mkdir -p drift
+          cp extra_pipelines.txt drift/extra_pipelines.txt || true
+          cp extra_datasets.txt drift/extra_datasets.txt || true
+          cp extra_linkedservices.txt drift/extra_linkedservices.txt || true
+
+      - name: Upload drift report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: adf-drift-report
+          path: drift
+
+      - name: Stop triggers in DEV
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p state
+          : > state/dev_started_triggers.txt
+          TRIGGERS=$(az datafactory trigger list --resource-group "${{ env.RESOURCE_GROUP }}" --factory-name "${{ env.DEV_FACTORY_NAME }}" --query "[].name" -o tsv || true)
+          for t in $TRIGGERS; do
+            st=$(az datafactory trigger show --resource-group "${{ env.RESOURCE_GROUP }}" --factory-name "${{ env.DEV_FACTORY_NAME }}" --name "$t" --query "properties.runtimeState" -o tsv)
+            if [ "$st" = "Started" ]; then echo "$t" >> state/dev_started_triggers.txt; fi
+            az datafactory trigger stop --resource-group "${{ env.RESOURCE_GROUP }}" --factory-name "${{ env.DEV_FACTORY_NAME }}" --name "$t" || true
+          done
+
+      - name: Deploy ARM to DEV (Live)
+        uses: azure/arm-deploy@v2
+        with:
+          scope: resourcegroup
+          subscriptionId: ${{ env.SUBSCRIPTION_ID }}
+          resourceGroupName: ${{ env.RESOURCE_GROUP }}
+          template: ArmTemplate/ARMTemplateForFactory.json
+          parameters: ArmTemplate/ARMTemplateParametersForFactory.final.json
+          deploymentName: adf-dev-${{ github.run_number }}
+          deploymentMode: Incremental
+
+      - name: Restore triggers in DEV
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f state/dev_started_triggers.txt ]; then
+            while read -r t; do
+              [ -z "$t" ] && continue
+              az datafactory trigger start --resource-group "${{ env.RESOURCE_GROUP }}" --factory-name "${{ env.DEV_FACTORY_NAME }}" --name "$t" || true
+            done < state/dev_started_triggers.txt
+          fi
+
+  # -------------------------
+  # OPTIONAL CLEANUP JOB (requires approval)
+  # Runs ONLY when manually dispatched with cleanup_extras=true
+  # and only after GitHub Environment approval.
+  # -------------------------
+  

@@ -1,6 +1,4 @@
-# Drop-in workflow (no .env/*json usage)
 # Builds ARM from a selective subset and deploys to DEV only.
-# Uses DeltaDentalCA/dd-action-azure-login@v1 (your original login pattern).
 
 name: ADF Release - Build ARM + Selective Deploy to DEV
 
@@ -21,8 +19,8 @@ permissions:
 
 env:
   SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-  RESOURCE_GROUP: covid-reporting-rg
-  DEV_FACTORY_NAME: covid-reporting-sauhard-adf
+  RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
+  DEV_FACTORY_NAME: ${{ secrets.DEV_FACTORY_NAME }}
   ARM_OUTPUT_DIR: ArmTemplate
 
 jobs:
